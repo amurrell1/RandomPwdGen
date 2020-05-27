@@ -1,0 +1,63 @@
+on: [push]
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    
+    - uses: actions/checkout@master
+    
+    - uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Create ACR
+      id: create-acr
+      run: |
+        az acr create -n andrenewtest -g andrenewtesta508-rg --location "Central US" --sku Basic --admin-enabled
+        echo "::set-output name=acr_username::`az acr credential show -n andrenewtest --query username | xargs`"
+        echo "::set-output name=acr_password::`az acr credential show -n andrenewtest --query passwords[0].value | xargs`"
+        echo "::add-mask::`az acr credential show -n andrenewtest --query passwords[0].value | xargs`"
+
+    - uses: azure/docker-login@v1
+      with:
+        login-server: andrenewtest.azurecr.io
+        username: ${{ steps.create-acr.outputs.acr_username }}
+        password: ${{ steps.create-acr.outputs.acr_password }}
+
+    - name: Build and push image to ACR
+      id: build-image
+      run: |
+        docker build "$GITHUB_WORKSPACE/" -f  "c:\" -t andrenewtest.azurecr.io/kubdemotest:${{ github.sha }}
+        docker push andrenewtest.azurecr.io/kubdemotest:${{ github.sha }}
+    
+    - uses: azure/k8s-set-context@v1
+      id: login
+      with:
+         kubeconfig: ${{ secrets.aks_kubdemotest_kubeConfig }}
+    
+    - name: Create namespace
+      run: |
+        namespacePresent=`kubectl get namespace | grep kubdemotest312a | wc -l`
+        if [ $namespacePresent -eq 0 ]
+        then
+            echo `kubectl create namespace kubdemotest312a`
+        fi
+
+    - uses: azure/k8s-create-secret@v1
+      with:
+        namespace: kubdemotest312a
+        container-registry-url: andrenewtest.azurecr.io
+        container-registry-username: ${{ steps.create-acr.outputs.acr_username }}
+        container-registry-password: ${{ steps.create-acr.outputs.acr_password }}
+        secret-name: kubdemotestdockerauth
+       
+    - uses: azure/k8s-deploy@v1
+      with:
+        namespace: kubdemotest312a
+        manifests: |
+          manifests/deployment.yml
+          manifests/service.yml
+        images: |
+          andrenewtest.azurecr.io/kubdemotest:${{ github.sha }}
+        imagepullsecrets: |
+          kubdemotestdockerauth
